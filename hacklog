@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+#
+# hacklog  lightweight session logger for a directory tree (Bash/Zsh)
+
+# --- GLOBAL CONFIG ----------------------------------------------
+HACKLOG_DEFAULT_IGNORE="cd ls clear pwd history hacklog"
+HACKLOG_MARKER=".hacklogrc"
+
+# --- ANSI COLORS ------------------------------------------------
+RED=$'\e[31m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; BLUE=$'\e[34m'; RESET=$'\e[0m'
+
+error() { printf "${RED}ERROR:${RESET} %s\n" "$*" >&2; }
+info()  { printf "${BLUE}INFO:${RESET} %s\n" "$*\n"; }
+
+# --- FIND ROOT --------------------------------------------------
+_find_hacklog_root() {
+  local dir="$PWD"
+  while [[ "$dir" != "/" ]]; do
+    if [[ -f "$dir/$HACKLOG_MARKER" ]]; then
+      echo "$dir"
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+  return 1
+}
+
+# --- COMMAND LOGGER ---------------------------------------------
+_hacklog_log_command() {
+  local cmd="$1"
+  [[ -z "$cmd" ]] && return
+
+  local root=$(_find_hacklog_root) || return
+  local logfile="$root/.hacklog"
+  local rel_path="${PWD#$root}"
+  rel_path="${rel_path:-/}"
+
+  for ignored in ${HACKLOG_IGNORE}; do
+    [[ "${cmd%% *}" == "$ignored" ]] && return
+  done
+
+  printf "%s\t%s\t%s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$rel_path" "$cmd" >> "$logfile"
+}
+
+# --- SETUP BASH/ZSH HOOKS ---------------------------------------
+_setup_bash_logging() {
+  [[ "${PROMPT_COMMAND:-}" != *"_hacklog_log_command"* ]] && \
+    PROMPT_COMMAND='_hacklog_log_command "$(HISTTIMEFORMAT= history 1 | sed "s/^[ ]*[0-9]\+[ ]*//")"'
+}
+
+_setup_zsh_logging() {
+  autoload -Uz add-zsh-hook || return
+  _hacklog_zsh_preexec() { _hacklog_log_command "$1"; }
+  add-zsh-hook preexec _hacklog_zsh_preexec
+}
+
+# --- INIT -------------------------------------------------------
+init() {
+  local ignore="$HACKLOG_DEFAULT_IGNORE"
+  local logfile="$PWD/.hacklog"
+  touch "$logfile" || { error "Failed to create log file"; return 1; }
+  echo "HACKLOG_INITIALIZED" > "$PWD/$HACKLOG_MARKER"
+
+  export HACKLOG_IGNORE="$ignore"
+
+  case "$SHELL" in
+    */bash) _setup_bash_logging ;;
+    */zsh)  _setup_zsh_logging ;;
+    *) error "Unsupported shell"; return 1 ;;
+  esac
+
+  info "Logging started at $PWD"
+  info "Log file: $logfile"
+  info "Ignored commands: $ignore"
+}
+
+# --- NOTE -------------------------------------------------------
+note() {
+  local root=$(_find_hacklog_root) || { error "Not initialized."; return 1; }
+  local logfile="$root/.hacklog"
+  local content="$*"
+
+  if [[ -z "$content" ]]; then
+    echo "Enter note (Ctrl+D to finish):"
+    content=$(cat)
+  fi
+
+  content=$(echo "$content" | tr '\n' ' ')
+  printf "%s\tNOTE\t%s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$content" >> "$logfile"
+  info "Note added to log."
+}
+
+# --- STOP -------------------------------------------------------
+stop() {
+  case "$SHELL" in
+    */bash) PROMPT_COMMAND="" ;;
+    */zsh) add-zsh-hook -d preexec _hacklog_zsh_preexec 2>/dev/null ;;
+  esac
+  unset HACKLOG_IGNORE
+  info "Hacklog stopped."
+}
+
+# --- VIEW LOG ---------------------------------------------------
+view() {
+  local root=$(_find_hacklog_root) || { error "Not initialized."; return 1; }
+  less "$root/.hacklog"
+}
+
+# --- DISPATCH ---------------------------------------------------
+case "$1" in
+  init)   shift; init "$@" ;;
+  note)   shift; note "$@" ;;
+  stop)   stop ;;
+  view)   view ;;
+  help|-h|--help)
+    cat <<EOF
+Usage:
+  source hacklog init           # Start logging in current dir
+  hacklog note [text]           # Add note
+  hacklog stop                  # Stop logging
+  hacklog view                  # View the log
+EOF
+    ;;
+  *)
+    [[ "${BASH_SOURCE[0]}" != "$0" ]] && return || usage
+    ;;
+esac
